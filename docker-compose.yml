@@ -1,0 +1,47 @@
+# Single-node MongoDB replica set.
+# A replica set is required so the booking service can use multi-document
+# transactions (atomic "reserve capacity + create booking"). The `mongo-init`
+# service initiates the replica set once, so the reviewer only runs:
+#   docker compose up -d
+services:
+  mongo:
+    image: mongo:7
+    container_name: codeyoung-mongo
+    command: ["--replSet", "rs0", "--bind_ip_all"]
+    ports:
+      # Host port is overridable (e.g. MONGO_HOST_PORT=27018) in case 27017 is
+      # already taken by a local mongod. Keep backend/.env's MONGODB_URI in sync.
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: initiate the replica set if it isn't already. The member host is
+  # "localhost:27017" so the app (running on the host) can connect directly.
+  mongo-init:
+    image: mongo:7
+    container_name: codeyoung-mongo-init
+    depends_on:
+      mongo:
+        condition: service_healthy
+    restart: "no"
+    entrypoint:
+      - bash
+      - -c
+      - |
+        mongosh --host mongo:27017 --quiet --eval '
+          try {
+            rs.status();
+            print("replica set already initiated");
+          } catch (e) {
+            rs.initiate({ _id: "rs0", members: [{ _id: 0, host: "localhost:27017" }] });
+            print("replica set initiated");
+          }
+        '
+
+volumes:
+  mongo-data:
